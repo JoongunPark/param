@@ -80,7 +80,7 @@ class KinetoOperator:
             if "correlation" in kineto_op["args"]:
                 self.correlation = int(kineto_op["args"]["correlation"])
 
-    def is_valid(self, category: str, name_exception: str = "ProfilerStep",
+    def is_valid(self, category: str, #name_exception: str = "ProfilerStep",
                  phase: Optional[str] = None) -> bool:
         """
         Checks if the operator matches specified filtering criteria.
@@ -94,7 +94,7 @@ class KinetoOperator:
             bool: True if the operator matches the criteria, False otherwise.
         """
         return (self.category is not None and
-                name_exception not in self.name and
+#                name_exception not in self.name and
                 self.category == category and
                 (phase is None or self.phase == phase))
 
@@ -795,9 +795,9 @@ class TraceLinker:
                 f" A warning is logged if this is not the case, which is a rare "
                 f"but possible scenario."
             )
-
+        shifted_id, found = self.find_shifted_ids()
         for i, pytorch_op in enumerate(self.pytorch_ops):
-            kineto_op = self.find_corresponding_kineto_op(pytorch_op, i)
+            kineto_op = self.find_corresponding_kineto_op(pytorch_op, i, shifted_id, found)
             if kineto_op is None:
                 self.logger.warning(
                     f"No corresponding Kineto op found for PyTorch op "
@@ -845,6 +845,28 @@ class TraceLinker:
             cpu_ev_idx_to_gpu_ops_map.setdefault(parent_cpu_op.ev_idx, []).append(gpu_op)
 
         return cpu_ev_idx_to_gpu_ops_map
+
+    def find_shifted_ids(self) -> (int, bool):
+        """
+        Find the difference between the IDs in PyTorch and Kineto for the first matching operation.
+        This function is used to identify the shift in IDs between corresponding operations
+        in PyTorch and Kineto profilers, particularly useful for alignment in analysis.
+
+        Returns:
+            A tuple containing:
+            - The difference between PyTorch and Kineto operation IDs if a match is found.
+            - A boolean indicating whether a matching operation was found.
+            If no matching operations are found or if an error occurs, returns (0, False).
+        """
+        for kineto_op in self.kineto_ops:
+            if "ProfilerStep" in kineto_op.name and kineto_op.external_id is not None:
+                for pytorch_op in self.pytorch_ops:
+                    if kineto_op.name == pytorch_op.name and pytorch_op.rf_id is not None:
+                        return pytorch_op.rf_id - kineto_op.external_id, True
+
+        self.logger.warning("Cannot find shifted ids between PyTorch and Kineto.")
+        # Return 0 and False as default values indicating no shift found or error
+        return 0, False
 
     def find_parent_cpu_op(self, kineto_gpu_op: KinetoOperator) -> Optional[KinetoOperator]:
         """
@@ -941,7 +963,8 @@ class TraceLinker:
         return closest_op
 
     def find_corresponding_kineto_op(self, pytorch_op: PyTorchOperator,
-                                     index: int) -> Optional[KinetoOperator]:
+                                     index: int, shifted_id: int,
+                                     found: bool) -> Optional[KinetoOperator]:
         """
         Finds the corresponding Kineto operator for a given PyTorch operator.
 
@@ -961,11 +984,21 @@ class TraceLinker:
             backward_index = index - distance
 
             if forward_index < kineto_ops_length:
-                if self.kineto_ops[forward_index].name == pytorch_op.name:
+                if self.kineto_ops[forward_index].name == pytorch_op.name and\
+                    (not found or
+                    (self.kineto_ops[forward_index].external_id != None and\
+                            pytorch_op.rf_id is not None and\
+                    self.kineto_ops[forward_index].external_id + shifted_id == pytorch_op.rf_id)):
+                    print('--------------------Matched--------------')
                     return self.kineto_ops[forward_index]
 
             if (backward_index >= 0) and (backward_index < kineto_ops_length):
-                if self.kineto_ops[backward_index].name == pytorch_op.name:
+                if self.kineto_ops[backward_index].name == pytorch_op.name and\
+                    (not found or
+                            (pytorch_op.rf_id is not None and\
+                    self.kineto_ops[backward_index].external_id != None and\
+                    self.kineto_ops[backward_index].external_id + shifted_id == pytorch_op.rf_id)):
+                    print('--------------------Matched--------------')
                     return self.kineto_ops[backward_index]
 
         return None
